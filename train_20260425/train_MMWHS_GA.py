@@ -1,0 +1,436 @@
+import os
+import sys
+from tqdm import tqdm
+from tensorboardX import SummaryWriter
+import shutil
+import argparse
+import logging
+import time
+import random
+import numpy as np
+import torch
+import torch.optim as optim
+from torchvision import transforms
+import torch.nn.functional as F
+import torch.backends.cudnn as cudnn
+from torch.utils.data import DataLoader
+from torchvision.utils import make_grid
+from sklearn.model_selection import KFold
+from utils import ramps, cube_losses, cube_utils, test_util
+from dataloaders.dataset import *
+from networks.magicnet import VNet_Magic
+from loss_amos import GADice, GACE
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset_name', type=str, default='MMWHS', help='dataset_name')
+parser.add_argument('--root_path', type=str, default='/data/why/Datasets/MMWHS/', help='Name of Dataset')
+parser.add_argument('--log_path', type=str, default='/data/why/logs/', help='path to save')
+parser.add_argument('--exp', type=str, default='GA', help='exp_name')
+parser.add_argument('--model', type=str, default='V-Net', help='model_name')
+parser.add_argument('--max_iteration', type=int, default=35000, help='maximum iteration to train')
+parser.add_argument('--total_samples', type=int, default=90, help='total samples of the dataset')
+parser.add_argument('--max_epoch', type=int, default=12000, help='maximum epoch number to train')
+parser.add_argument('--max_train_samples', type=int, default=66, help='maximum samples to train')
+parser.add_argument('--max_test_samples', type=int, default=22, help='maximum samples to test')
+parser.add_argument('--labeled_bs', type=int, default=2, help='batch_size of labeled data per gpu')
+parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
+parser.add_argument('--base_lr', type=float, default=0.01, help='maximum epoch number to train')
+parser.add_argument('--deterministic', type=int, default=1, help='whether use deterministic training')
+parser.add_argument('--label_num', type=int, default=4, help='labeled trained samples')
+parser.add_argument('--seed', type=int, default=1337, help='random seed')
+parser.add_argument('--cube_size', type=int, default=32, help='size of each cube')
+parser.add_argument('--ema_decay', type=float, default=0.99, help='ema_decay')
+parser.add_argument('--consistency_type', type=str, default="mse", help='consistency_type')
+parser.add_argument('--consistency', type=float, default=0.1, help='consistency')
+parser.add_argument('--consistency_rampup', type=float, default=200.0, help='consistency_rampup')
+parser.add_argument('--T_dist', type=float, default=1.0, help='Temperature for organ-class distribution')
+parser.add_argument('--remark', type=str, default='ours_1', help='exp_name')
+args = parser.parse_args()
+
+
+def get_current_consistency_weight(epoch):
+    # Consistency ramp-up from https://arxiv.org/abs/1610.02242
+    return args.consistency * ramps.sigmoid_rampup(epoch, args.consistency_rampup)
+
+
+def update_ema_variables(model, ema_model, alpha, global_step):
+    # Use the true average until the exponential average is more correct
+    alpha = min(1 - 1 / (global_step + 1), alpha)
+    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+        ema_param.data.mul_(alpha).add_(param.data, alpha = 1 - alpha)
+
+
+def create_model(n_classes=14, cube_size=32, patch_size=96, ema=False):
+    # Network definition
+    net = VNet_Magic(n_channels=1, n_classes=n_classes, cube_size=cube_size, patch_size=patch_size)
+    if torch.cuda.device_count() > 1:
+        net = torch.nn.DataParallel(net)
+    model = net.cuda()
+    if ema:
+        for param in model.parameters():
+            param.detach_()
+    return model
+
+def read_list(split):
+    ids_list = np.loadtxt(
+        os.path.join(f'{args.root_path}/split_txts/', f'{split}.txt'),
+        dtype=str
+    ).tolist()
+    return sorted(ids_list)
+
+if args.label_num == 10:
+    labeled_list = read_list('labeled_10p')
+    unlabeled_list = read_list('unlabeled_10p')
+elif args.label_num == 50:
+    labeled_list = read_list('labeled_50p')
+    unlabeled_list = read_list('unlabeled_50p')
+else:
+    print('Error label_num!')
+    os.exit()
+
+test_list = read_list('test')
+
+snapshot_path = args.log_path + "/GA_{}_{}_{}_{}".format(args.dataset_name, args.exp, args.label_num, args.remark)
+
+num_classes = 8
+class_momentum = 0.999
+patch_size = (96, 96, 96)
+
+train_data_path = args.root_path
+max_iterations = args.max_iteration
+base_lr = args.base_lr
+labeled_bs = args.labeled_bs
+cube_size = args.cube_size
+
+if args.deterministic:
+    cudnn.benchmark = False
+    cudnn.deterministic = True
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+
+def config_log(snapshot_path_tmp, typename):
+    formatter = logging.Formatter(fmt='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    logging.getLogger().setLevel(logging.INFO)
+    handler = logging.FileHandler(snapshot_path_tmp + "/log_{}.txt".format(typename), mode="w")
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(handler)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    sh.setLevel(logging.INFO)
+    logging.getLogger().addHandler(sh)
+    return handler, sh
+
+
+
+def train(labeled_list, unlabeled_list):
+    train_list = labeled_list + unlabeled_list
+    handler, sh = config_log(snapshot_path, 'train')
+    logging.info(str(args))
+    model = create_model(n_classes=num_classes, cube_size=cube_size, patch_size=patch_size[0])
+    ema_model = create_model(n_classes=num_classes, cube_size=cube_size, patch_size=patch_size[0], ema=True)
+    optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001, nesterov=True)
+    dist_logger = cube_utils.OrganClassLogger(num_classes=num_classes)
+    db_train = MMWHS(train_list,
+                    base_dir=train_data_path,
+                    transform=transforms.Compose([
+                        RandomCrop(patch_size),
+                        ToTensor(),
+                    ]))
+    labeled_idxs = list(range(0, len(labeled_list)))
+    unlabeled_idxs = list(range(len(labeled_list), len(train_list)))
+    batch_sampler = TwoStreamBatchSampler(
+        labeled_idxs, 
+        unlabeled_idxs, 
+        args.batch_size, 
+        args.batch_size - args.labeled_bs
+    )
+
+    def worker_init_fn(worker_id):
+        random.seed(args.seed + worker_id)
+
+    trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=2, pin_memory=True, worker_init_fn=worker_init_fn)
+
+    writer = SummaryWriter(snapshot_path)
+    logging.info("{} itertations per epoch".format(len(trainloader)))
+    logging.info("Logs files: {} ".format(snapshot_path))
+
+    dice_loss = GADice()
+    ce_loss = GACE(k=10, gama=0.5)      
+
+
+    ema_model.train()
+
+    iter_num = 0
+    best_dice_avg = 0
+    metric_all_cases = None
+    lr_ = base_lr
+    loc_list = None
+    dist_logger = cube_utils.OrganClassLogger(num_classes=num_classes)
+
+    for epoch_num in tqdm(range(args.max_epoch + 1), dynamic_ncols=True, position=0):
+        for i_batch, sampled_batch in enumerate(trainloader):
+            volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
+            volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
+            unlabeled_volume_batch = volume_batch[labeled_bs:]
+            labeled_volume_batch = volume_batch[:labeled_bs]
+
+            model.train()
+            outputs = model(volume_batch)[0] # Original Model Outputs
+
+            # Cross-image Partition-and-Recovery
+            bs, c, w, h, d = volume_batch.shape
+            nb_cubes = h // cube_size
+            cube_part_ind, cube_rec_ind = cube_utils.get_part_and_rec_ind(volume_shape=volume_batch.shape,
+                                                                          nb_cubes=nb_cubes,
+                                                                          nb_chnls=16)
+            img_cross_mix = volume_batch.view(bs, c, w, h, d)
+            img_cross_mix = torch.gather(img_cross_mix, dim=0, index=cube_part_ind)  # 同 batch 内进行 cube 交换，打乱的过程。
+            img_cross_mix = img_cross_mix.view(bs, c, w, h, d)
+            
+
+            outputs_mix, embedding = model(img_cross_mix)
+            c_ = embedding.shape[1]
+            pred_rec = torch.gather(embedding, dim=0, index=cube_rec_ind)  # 将交换后的 cube 恢复原位
+            pred_rec = pred_rec.view(bs, c_, w, h, d)
+            outputs_unmix = model.forward_prediction_head(pred_rec)
+            
+
+            # Get pseudo-label from teacher model
+            noise = torch.clamp(torch.randn_like(unlabeled_volume_batch) * 0.1, -0.2, 0.2)
+            ema_inputs = unlabeled_volume_batch + noise
+            with torch.no_grad():
+                ema_output = ema_model(ema_inputs)[0]
+                unlab_pl_soft = F.softmax(ema_output, dim=1)
+                pred_value_teacher, pred_class_teacher = torch.max(unlab_pl_soft, dim=1)
+
+            # nt = 3, ts = 32
+            # loc_list: 27 x [1, 1] (x + Wy + WHz)
+            if iter_num == 0:
+                loc_list = cube_utils.get_loc_mask(volume_batch, cube_size)
+
+            # calculate some losses
+            loss_seg = ce_loss(outputs[:labeled_bs], label_batch[:labeled_bs].unsqueeze(1))
+            outputs_soft = F.softmax(outputs, dim=1)
+            outputs_unmix_soft = F.softmax(outputs_unmix, dim=1)
+            loss_seg_dice = dice_loss(outputs_soft[:labeled_bs], label_batch[:labeled_bs])
+            loss_unmix_dice = dice_loss(outputs_unmix_soft[:labeled_bs], label_batch[:labeled_bs])
+            
+            
+            supervised_loss = (loss_seg + loss_seg_dice + loss_unmix_dice)
+            count_ss = 3
+
+            # Magic-cube Location Reasoning
+            # patch_list: N=27 x [4, 1, 1, 32, 32, 32] (bs, pn, c, w, h, d)
+            patch_list = cube_losses.get_patch_list(volume_batch, cube_size=cube_size)
+            # idx = 27
+            idx = torch.randperm(len(patch_list)).cuda()  # random
+            # cube location loss
+            loc_loss = 0
+            feat_list = None
+            if loc_list is not None:
+                loc_loss, feat_list = cube_losses.cube_location_loss(model, loc_list, patch_list, idx, labeled_bs, cube_size=cube_size)
+
+            consistency_loss = 0
+            count_consist = 1
+
+            # Within-image Partition-and-Recovery
+            if feat_list is not None:
+                embed_list = []
+                for i in range(bs):
+                    pred_tmp, embed_tmp = model.forward_decoder(feat_list[i])
+                    embed_list.append(embed_tmp.unsqueeze(0))
+
+                embed_all = torch.cat(embed_list, dim=0)
+                embed_all_unmix = cube_losses.unmix_tensor(embed_all, labeled_volume_batch.shape)
+                pred_all_unmix = model.forward_prediction_head(embed_all_unmix) 
+                unmix_pred_soft = F.softmax(pred_all_unmix, dim=1)
+                loss_lab_local_dice = dice_loss(unmix_pred_soft[:labeled_bs], label_batch[:labeled_bs])
+                supervised_loss += loss_lab_local_dice
+                count_ss += 1
+                
+
+            # Cube-wise Pseudo-label Blending
+            pred_class_mix = None
+            with torch.no_grad():
+                # To store some class pixels at the beginning of training to calculate the organ-class dist
+                if iter_num > 100 and feat_list is not None:
+                    # Get organ-class distribution
+                    current_organ_dist = dist_logger.get_class_dist().cuda()  # (1, C)
+                    # Normalize
+                    current_organ_dist = current_organ_dist ** (1. / args.T_dist)
+                    current_organ_dist = current_organ_dist / current_organ_dist.sum()
+                    current_organ_dist = current_organ_dist / current_organ_dist.max()
+
+
+                    weight_map = current_organ_dist[pred_class_teacher].unsqueeze(1).repeat(1, num_classes, 1, 1, 1)
+
+                    unmix_pl = cube_losses.get_mix_pl(model, feat_list, volume_batch.shape, bs - labeled_bs)
+                    unlab_pl_mix = (1. - weight_map) * ema_output + weight_map * unmix_pl
+                    unlab_pl_mix_soft = F.softmax(unlab_pl_mix, dim=1)
+                    _, pred_class_mix = torch.max(unlab_pl_mix_soft, dim=1)
+
+                    # pr_class: 2x96**3, 1
+                    conf, pr_class = torch.max(unlab_pl_mix_soft.detach(), dim=1)
+                    dist_logger.append_class_list(pr_class.view(-1, 1))
+
+                elif feat_list is not None:
+                    conf, pr_class = torch.max(unlab_pl_soft.detach(), dim=1)
+                    dist_logger.append_class_list(pr_class.view(-1, 1))
+
+
+            if iter_num % 20 == 0 and len(dist_logger.class_total_pixel_store):
+                dist_logger.update_class_dist()
+
+            consistency_weight = get_current_consistency_weight(iter_num // 350)
+            # debiase the pseudo-label: blend ema and unmixed_within pseudo-label
+            if pred_class_mix is None:
+                consistency_loss_unmix = dice_loss(outputs_unmix_soft[labeled_bs:], pred_class_teacher)
+            else:
+                consistency_loss_unmix = dice_loss(outputs_unmix_soft[labeled_bs:], pred_class_mix)
+
+            consistency_loss += consistency_loss_unmix
+
+            supervised_loss /= count_ss
+            consistency_loss /= count_consist
+
+            # Final Loss
+            loss = supervised_loss + 0.1 * loc_loss + consistency_weight * consistency_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            update_ema_variables(model, ema_model, args.ema_decay, iter_num)
+
+            iter_num = iter_num + 1
+
+            if iter_num % 200 == 0:
+                logging.info('Fold {}, iteration {}: loss: {:.3f}, '
+                             'cons_dist: {:.3f}, loss_weight: {:f}, '
+                             'loss_loc: {:.3f}'.format(1, iter_num,
+                                                       loss,
+                                                       consistency_loss,
+                                                       consistency_weight,
+                                                       0.1 * loc_loss))
+
+            lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr_
+            if iter_num >= 400 and iter_num % 500 == 0:
+            # if iter_num % 100 == 0:
+            # if iter_num >= max_iterations:
+                model.eval()
+                dice_all, std_all, metric_all_cases = test_util.validation_all_case_MMWHS(model,
+                                                                                     num_classes=num_classes,
+                                                                                     base_dir=train_data_path,
+                                                                                     image_list=test_list,
+                                                                                     patch_size=patch_size,
+                                                                                     stride_xy=90,
+                                                                                     stride_z=80)
+                dice_avg = dice_all.mean()
+
+                logging.info('iteration {}, '
+                            'average DSC: {:.3f}, '
+                            'LVC: {:.3f}, '
+                            'LAC: {:.3f}, '
+                            'MYO: {:.3f}, '
+                            'RAC: {:.3f}, '
+                            'RVC: {:.3f}, '
+                            'AA: {:.3f}, '
+                            'PA: {:.3f}'
+                            .format(iter_num,
+                                    dice_avg,
+                                    dice_all[0],  # 对应映射后的 label 1: LVC
+                                    dice_all[1],  # 对应映射后的 label 2: LAC
+                                    dice_all[2],  # 对应映射后的 label 3: MYO
+                                    dice_all[3],  # 对应映射后的 label 4: RAC
+                                    dice_all[4],  # 对应映射后的 label 5: RVC
+                                    dice_all[5],  # 对应映射后的 label 6: AA
+                                    dice_all[6])) # 对应映射后的 label 7: PA
+
+                if dice_avg > best_dice_avg:
+                    best_dice_avg = dice_avg
+                    best_model_path = os.path.join(snapshot_path, 'iter_{}_dice_{}_best.pth'.format(str(iter_num).zfill(5), str(best_dice_avg)[:8]))
+                    torch.save(model.state_dict(), best_model_path)
+                    logging.info("save best model to {}".format(best_model_path))
+                else:
+                    save_mode_path = os.path.join(snapshot_path, 'iter_{}_dice_{}.pth'.format(str(iter_num).zfill(5), str(dice_avg)[:8]))
+                    torch.save(model.state_dict(), save_mode_path)
+                    logging.info("save model to {}".format(save_mode_path))
+                
+                model.train()
+    
+    writer.close()
+    logging.getLogger().removeHandler(handler)
+    logging.getLogger().removeHandler(sh)
+
+    return metric_all_cases, best_model_path
+
+
+if __name__ == "__main__":
+    # import setproctitle
+    # setproctitle.setproctitle(f'amos{args.label_num}_{args.remark}')
+
+    # if not os.path.exists(snapshot_path):
+    #     os.makedirs(snapshot_path)
+    #     print("Create new folder {}".format(snapshot_path))
+    # else:
+    #     shutil.rmtree(snapshot_path)
+    #     os.makedirs(snapshot_path)
+
+    # _, best_model_path = train(labeled_list, unlabeled_list)
+
+    # save_best_path = best_model_path
+    # save_best_path = '/data/why/logs/GA_MMWHS_GA_10_baseline/iter_19500_dice_0.740375_best.pth'
+    save_best_path = '/data/why/logs/GA_MMWHS_GA_50_baseline/iter_33000_dice_0.868505_best.pth'
+
+
+    model = create_model(n_classes=num_classes, cube_size=cube_size, patch_size=patch_size[0])
+    model.load_state_dict(torch.load(save_best_path, weights_only=True))
+    model.eval()
+    _, _, metric_final = test_util.validation_all_case_MMWHS(model, num_classes=num_classes, base_dir=train_data_path,
+                                                       image_list=test_list, patch_size=patch_size, stride_xy=24,
+                                                       stride_z=16, save_nii_dir=snapshot_path)
+
+    # 12x4x13
+    # 4x13, 4x13
+    metric_mean, metric_std = np.mean(metric_final, axis=0), np.std(metric_final, axis=0)
+
+    metric_log_path = os.path.join(snapshot_path, 'metric_final_{}_{}.npy'.format(args.dataset_name, args.exp))
+    np.save(metric_log_path, metric_final)
+
+    handler, sh = config_log(snapshot_path, 'total_metric')
+    logging.info(
+    'Final Average DSC:{:.4f}+-{:.4f},, JI: {:.4f}+-{:.4f},, HD95: {:.4f}+-{:.4f},, ASD: {:.4f}+-{:.4f},, '
+    'MYO: {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, '
+    'LAC: {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, '
+    'RAC: {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, '
+    'LVC: {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, '
+    'RVC: {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, '
+    'AA: {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, '
+    'PA: {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}, {:.4f}+-{:.4f}'
+    .format(
+        metric_mean[0].mean(), metric_std[0].mean(),
+        metric_mean[1].mean(), metric_std[1].mean(),
+        metric_mean[2].mean(), metric_std[2].mean(),
+        metric_mean[3].mean(), metric_std[3].mean(),
+        metric_mean[0][0], metric_std[0][0], metric_mean[1][0], metric_std[1][0], metric_mean[2][0], metric_std[2][0], metric_mean[3][0], metric_std[3][0],  # MYO
+        metric_mean[0][1], metric_std[0][1], metric_mean[1][1], metric_std[1][1], metric_mean[2][1], metric_std[2][1], metric_mean[3][1], metric_std[3][1],  # LAC
+        metric_mean[0][2], metric_std[0][2], metric_mean[1][2], metric_std[1][2], metric_mean[2][2], metric_std[2][2], metric_mean[3][2], metric_std[3][2],  # RAC
+        metric_mean[0][3], metric_std[0][3], metric_mean[1][3], metric_std[1][3], metric_mean[2][3], metric_std[2][3], metric_mean[3][3], metric_std[3][3],  # LVC
+        metric_mean[0][4], metric_std[0][4], metric_mean[1][4], metric_std[1][4], metric_mean[2][4], metric_std[2][4], metric_mean[3][4], metric_std[3][4],  # RVC
+        metric_mean[0][5], metric_std[0][5], metric_mean[1][5], metric_std[1][5], metric_mean[2][5], metric_std[2][5], metric_mean[3][5], metric_std[3][5],  # AA
+        metric_mean[0][6], metric_std[0][6], metric_mean[1][6], metric_std[1][6], metric_mean[2][6], metric_std[2][6], metric_mean[3][6], metric_std[3][6]   # PA
+    )
+    )
+
+    logging.getLogger().removeHandler(handler)
+    logging.getLogger().removeHandler(sh)
+
+
+# CUDA_VISIBLE_DEVICES=0 python train_MMWHS_GA.py --seed 1337 --label_num 10 --remark "baseline"
+# CUDA_VISIBLE_DEVICES=0 python train_MMWHS_GA.py --seed 1337 --label_num 50 --remark "baseline"
