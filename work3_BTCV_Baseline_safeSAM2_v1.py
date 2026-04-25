@@ -1664,7 +1664,7 @@ CUDA_VISIBLE_DEVICES=1 python work3_BTCV_Baseline_safeSAM2_v1.py \
   --max_iteration 35000 \
   --use_medsam2 1 \
   --medsam2_root MIS_W3 \
-  --medsam2_checkpoint /path/to/MedSAM2_latest.pt \
+  --medsam2_checkpoint /data/why/pretrain/sam2/MedSAM2_latest.pt \
   --medsam2_num_classes 14 \
   --medsam2_warmup 3000 \
   --medsam2_interval 50 \

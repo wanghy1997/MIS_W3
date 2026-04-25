@@ -1112,8 +1112,8 @@ python work3_BTCV_Baseline_safeSAM2.py \
   --exp SAM2SSL_safe_bp_maskK5_repeat_20260424 \
   --labelnum 10 \
   --medsam2_root /home/why/SSL4MIS_work3/MedSAM2 \
-  --medsam2_cfg sam2_hiera_b+.yaml \
-  --medsam2_checkpoint /home/why/SSL4MIS_work3/MedSAM2/checkpoints/sam2_hiera_base_plus.pt \
+  --medsam2_cfg /data/why/pretrain/sam2/sam2_hiera_b+.yaml \
+  --medsam2_checkpoint /data/why/pretrain/sam2/sam2_hiera_base_plus.pt \
   --medsam2_prompt_type mask \
   --medsam2_num_condition_frames 5 \
   --medsam2_rgb_mode repeat \
