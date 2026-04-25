@@ -53,52 +53,53 @@ parser.add_argument('--consistency_type', type=str, default="mse", help='consist
 parser.add_argument('--consistency', type=float, default=0.1, help='consistency')
 parser.add_argument('--consistency_rampup', type=float, default=200.0, help='consistency_rampup')
 parser.add_argument('--T_dist', type=float, default=1.0, help='Temperature for organ-class distribution')
-parser.add_argument('--use_medsam2', type=int, default=1, help='whether to use MedSAM2 as the second teacher')
-parser.add_argument('--medsam2_root', type=str, default=SCRIPT_DIR, help='MedSAM2/SAM2 repo root')
-parser.add_argument('--medsam2_cfg', type=str, default='configs/sam2.1_hiera_t512.yaml', help='MedSAM2 config path')
-parser.add_argument('--medsam2_checkpoint', type=str, default='./checkpoints/MedSAM2_latest.pt', help='MedSAM2 checkpoint path')
-parser.add_argument('--medsam2_warmup', type=int, default=3000, help='start using MedSAM2 after this many iterations')
-parser.add_argument('--medsam2_interval', type=int, default=50, help='run MedSAM2 every N iterations')
-parser.add_argument('--medsam2_blend_alpha', type=float, default=0.05, help='blend weight of MedSAM2 over EMA teacher')
-parser.add_argument('--medsam2_num_classes', type=int, default=14, help='number of semantic classes for MedSAM2 teacher')
-parser.add_argument('--medsam2_prompt_type', type=str, default='box', choices=['box', 'mask'], help='prompt type for MedSAM2')
-parser.add_argument('--medsam2_prompt_thresh', type=float, default=0.9, help='confidence threshold used to build MedSAM2 prompts')
-parser.add_argument('--medsam2_teacher_prob_thresh', type=float, default=0.9, help='confidence threshold used to rank MedSAM2 teacher voxels')
-parser.add_argument('--medsam2_min_voxels', type=int, default=1000, help='minimum 3D voxels for a class to be tracked by MedSAM2')
-parser.add_argument('--medsam2_min_slice_area', type=int, default=100, help='minimum 2D area for a conditioning slice')
-parser.add_argument('--medsam2_box_expand', type=int, default=4, help='expand MedSAM2 prompt boxes by this many pixels')
-parser.add_argument('--medsam2_max_classes', type=int, default=2, help='maximum foreground classes to track per unlabeled patch')
-parser.add_argument('--medsam2_num_condition_frames', type=int, default=1, help='number of key slices used as MedSAM2 conditioning frames')
-parser.add_argument('--medsam2_rgb_mode', type=str, default='neighbor', choices=['neighbor', 'repeat'], help='how to form RGB inputs for MedSAM2')
-parser.add_argument('--medsam2_full_volume', type=int, default=1, help='use full-volume teacher inference before cropping back to the current patch')
-parser.add_argument('--medsam2_stride_xy', type=int, default=64, help='sliding-window stride in x/y for full-volume EMA inference')
-parser.add_argument('--medsam2_stride_z', type=int, default=64, help='sliding-window stride in z for full-volume EMA inference')
-parser.add_argument('--medsam2_cache_size', type=int, default=32, help='number of full-volume teacher cases kept in memory')
-parser.add_argument('--medsam2_cache_ttl', type=int, default=100000, help='refresh cached full-volume teacher outputs after this many iterations')
-parser.add_argument('--medsam2_hard_weight', type=float, default=0.05, help='weight for hard MedSAM2 supervision')
-parser.add_argument('--medsam2_soft_weight', type=float, default=0.02, help='weight for soft MedSAM2 distillation')
-parser.add_argument('--medsam2_distill_temperature', type=float, default=1.0, help='temperature for MedSAM2 KL distillation')
-parser.add_argument('--medsam2_main_teacher_blend', type=int, default=0, help='blend trusted SAM2 voxels into the main EMA teacher')
-parser.add_argument('--medsam2_safe_ema_thresh', type=float, default=0.75, help='minimum EMA confidence for trusted SAM2 supervision')
-parser.add_argument('--medsam2_safe_sam2_thresh', type=float, default=0.75, help='minimum SAM2 confidence for trusted supervision')
-parser.add_argument('--medsam2_safe_min_coverage', type=float, default=0.002, help='minimum valid SAM2 coverage ratio per patch')
-parser.add_argument('--medsam2_safe_max_coverage', type=float, default=0.12, help='maximum valid SAM2 coverage ratio per patch')
-parser.add_argument('--medsam2_safe_min_trusted_voxels', type=int, default=512, help='minimum number of trusted SAM2 voxels before applying auxiliary losses')
-parser.add_argument('--medsam2_foreground_only', type=int, default=1, help='trust only foreground voxels when distilling from SAM2')
-parser.add_argument('--medsam2_lora_enable', type=int, default=1, help='enable LoRA finetuning for SAM2 memory modules')
-parser.add_argument('--medsam2_lora_rank', type=int, default=8, help='LoRA rank used in SAM2 memory modules')
-parser.add_argument('--medsam2_lora_alpha', type=float, default=16.0, help='LoRA alpha used in SAM2 memory modules')
-parser.add_argument('--medsam2_lora_dropout', type=float, default=0.0, help='LoRA dropout used in SAM2 memory modules')
-parser.add_argument('--medsam2_lora_lr', type=float, default=1e-4, help='learning rate of the SAM2 LoRA optimizer')
-parser.add_argument('--medsam2_lora_weight_decay', type=float, default=1e-4, help='weight decay of the SAM2 LoRA optimizer')
-parser.add_argument('--medsam2_lora_warmup', type=int, default=0, help='start SAM2 LoRA finetuning after this many iterations')
-parser.add_argument('--medsam2_lora_interval', type=int, default=1, help='run SAM2 LoRA finetuning every N iterations')
-parser.add_argument('--medsam2_lora_train_max_classes', type=int, default=2, help='maximum GT classes per labeled volume used to finetune SAM2 LoRA')
-parser.add_argument('--medsam2_lora_loss_weight', type=float, default=1.0, help='loss weight for SAM2 LoRA finetuning')
+parser.add_argument('--use_sam2', '--use_medsam2', dest='use_medsam2', type=int, default=1, help='whether to use official SAM2 as the second teacher')
+parser.add_argument('--sam2_root', '--medsam2_root', dest='medsam2_root', type=str, default=SCRIPT_DIR, help='official SAM2 repo root')
+parser.add_argument('--sam2_cfg', '--medsam2_cfg', dest='medsam2_cfg', type=str, default='/data/why/pretrain/sam2/sam2_hiera_b+.yaml', help='official SAM2 config path')
+parser.add_argument('--sam2_checkpoint', '--medsam2_checkpoint', dest='medsam2_checkpoint', type=str, default='/data/why/pretrain/sam2/sam2_hiera_base_plus.pt', help='official SAM2 checkpoint path; if empty, use sam2_model_id')
+parser.add_argument('--sam2_model_id', type=str, default='facebook/sam2-hiera-base-plus', help='official SAM2 Hugging Face model id')
+parser.add_argument('--sam2_warmup', '--medsam2_warmup', dest='medsam2_warmup', type=int, default=3000, help='start using SAM2 after this many iterations')
+parser.add_argument('--sam2_interval', '--medsam2_interval', dest='medsam2_interval', type=int, default=50, help='run SAM2 every N iterations')
+parser.add_argument('--sam2_blend_alpha', '--medsam2_blend_alpha', dest='medsam2_blend_alpha', type=float, default=0.05, help='blend weight of SAM2 over EMA teacher')
+parser.add_argument('--sam2_num_classes', '--medsam2_num_classes', dest='medsam2_num_classes', type=int, default=14, help='number of semantic classes for SAM2 teacher')
+parser.add_argument('--sam2_prompt_type', '--medsam2_prompt_type', dest='medsam2_prompt_type', type=str, default='box', choices=['box', 'mask'], help='prompt type for SAM2')
+parser.add_argument('--sam2_prompt_thresh', '--medsam2_prompt_thresh', dest='medsam2_prompt_thresh', type=float, default=0.9, help='confidence threshold used to build SAM2 prompts')
+parser.add_argument('--sam2_teacher_prob_thresh', '--medsam2_teacher_prob_thresh', dest='medsam2_teacher_prob_thresh', type=float, default=0.9, help='confidence threshold used to rank SAM2 teacher voxels')
+parser.add_argument('--sam2_min_voxels', '--medsam2_min_voxels', dest='medsam2_min_voxels', type=int, default=1000, help='minimum 3D voxels for a class to be tracked by SAM2')
+parser.add_argument('--sam2_min_slice_area', '--medsam2_min_slice_area', dest='medsam2_min_slice_area', type=int, default=100, help='minimum 2D area for a conditioning slice')
+parser.add_argument('--sam2_box_expand', '--medsam2_box_expand', dest='medsam2_box_expand', type=int, default=4, help='expand SAM2 prompt boxes by this many pixels')
+parser.add_argument('--sam2_max_classes', '--medsam2_max_classes', dest='medsam2_max_classes', type=int, default=2, help='maximum foreground classes to track per unlabeled patch')
+parser.add_argument('--sam2_num_condition_frames', '--medsam2_num_condition_frames', dest='medsam2_num_condition_frames', type=int, default=1, help='number of key slices used as SAM2 conditioning frames')
+parser.add_argument('--sam2_rgb_mode', '--medsam2_rgb_mode', dest='medsam2_rgb_mode', type=str, default='neighbor', choices=['neighbor', 'repeat'], help='how to form RGB inputs for SAM2')
+parser.add_argument('--sam2_full_volume', '--medsam2_full_volume', dest='medsam2_full_volume', type=int, default=1, help='use full-volume teacher inference before cropping back to the current patch')
+parser.add_argument('--sam2_stride_xy', '--medsam2_stride_xy', dest='medsam2_stride_xy', type=int, default=64, help='sliding-window stride in x/y for full-volume EMA inference')
+parser.add_argument('--sam2_stride_z', '--medsam2_stride_z', dest='medsam2_stride_z', type=int, default=64, help='sliding-window stride in z for full-volume EMA inference')
+parser.add_argument('--sam2_cache_size', '--medsam2_cache_size', dest='medsam2_cache_size', type=int, default=32, help='number of full-volume teacher cases kept in memory')
+parser.add_argument('--sam2_cache_ttl', '--medsam2_cache_ttl', dest='medsam2_cache_ttl', type=int, default=100000, help='refresh cached full-volume teacher outputs after this many iterations')
+parser.add_argument('--sam2_hard_weight', '--medsam2_hard_weight', dest='medsam2_hard_weight', type=float, default=0.05, help='weight for hard SAM2 supervision')
+parser.add_argument('--sam2_soft_weight', '--medsam2_soft_weight', dest='medsam2_soft_weight', type=float, default=0.02, help='weight for soft SAM2 distillation')
+parser.add_argument('--sam2_distill_temperature', '--medsam2_distill_temperature', dest='medsam2_distill_temperature', type=float, default=1.0, help='temperature for SAM2 KL distillation')
+parser.add_argument('--sam2_main_teacher_blend', '--medsam2_main_teacher_blend', dest='medsam2_main_teacher_blend', type=int, default=0, help='blend trusted SAM2 voxels into the main EMA teacher')
+parser.add_argument('--sam2_safe_ema_thresh', '--medsam2_safe_ema_thresh', dest='medsam2_safe_ema_thresh', type=float, default=0.75, help='minimum EMA confidence for trusted SAM2 supervision')
+parser.add_argument('--sam2_safe_sam2_thresh', '--medsam2_safe_sam2_thresh', dest='medsam2_safe_sam2_thresh', type=float, default=0.75, help='minimum SAM2 confidence for trusted supervision')
+parser.add_argument('--sam2_safe_min_coverage', '--medsam2_safe_min_coverage', dest='medsam2_safe_min_coverage', type=float, default=0.002, help='minimum valid SAM2 coverage ratio per patch')
+parser.add_argument('--sam2_safe_max_coverage', '--medsam2_safe_max_coverage', dest='medsam2_safe_max_coverage', type=float, default=0.12, help='maximum valid SAM2 coverage ratio per patch')
+parser.add_argument('--sam2_safe_min_trusted_voxels', '--medsam2_safe_min_trusted_voxels', dest='medsam2_safe_min_trusted_voxels', type=int, default=512, help='minimum number of trusted SAM2 voxels before applying auxiliary losses')
+parser.add_argument('--sam2_foreground_only', '--medsam2_foreground_only', dest='medsam2_foreground_only', type=int, default=1, help='trust only foreground voxels when distilling from SAM2')
+parser.add_argument('--sam2_lora_enable', '--medsam2_lora_enable', dest='medsam2_lora_enable', type=int, default=1, help='enable LoRA finetuning for SAM2 memory modules')
+parser.add_argument('--sam2_lora_rank', '--medsam2_lora_rank', dest='medsam2_lora_rank', type=int, default=8, help='LoRA rank used in SAM2 memory modules')
+parser.add_argument('--sam2_lora_alpha', '--medsam2_lora_alpha', dest='medsam2_lora_alpha', type=float, default=16.0, help='LoRA alpha used in SAM2 memory modules')
+parser.add_argument('--sam2_lora_dropout', '--medsam2_lora_dropout', dest='medsam2_lora_dropout', type=float, default=0.0, help='LoRA dropout used in SAM2 memory modules')
+parser.add_argument('--sam2_lora_lr', '--medsam2_lora_lr', dest='medsam2_lora_lr', type=float, default=1e-4, help='learning rate of the SAM2 LoRA optimizer')
+parser.add_argument('--sam2_lora_weight_decay', '--medsam2_lora_weight_decay', dest='medsam2_lora_weight_decay', type=float, default=1e-4, help='weight decay of the SAM2 LoRA optimizer')
+parser.add_argument('--sam2_lora_warmup', '--medsam2_lora_warmup', dest='medsam2_lora_warmup', type=int, default=0, help='start SAM2 LoRA finetuning after this many iterations')
+parser.add_argument('--sam2_lora_interval', '--medsam2_lora_interval', dest='medsam2_lora_interval', type=int, default=1, help='run SAM2 LoRA finetuning every N iterations')
+parser.add_argument('--sam2_lora_train_max_classes', '--medsam2_lora_train_max_classes', dest='medsam2_lora_train_max_classes', type=int, default=2, help='maximum GT classes per labeled volume used to finetune SAM2 LoRA')
+parser.add_argument('--sam2_lora_loss_weight', '--medsam2_lora_loss_weight', dest='medsam2_lora_loss_weight', type=float, default=1.0, help='loss weight for SAM2 LoRA finetuning')
 parser.add_argument('--resume_path', type=str, default='', help='checkpoint path for resuming training')
 parser.add_argument('--resume_iter', type=int, default=-1, help='override iteration number when resuming')
 parser.add_argument('--resume_best_dice', type=float, default=-1.0, help='override best dice when resuming')
-parser.add_argument('--disable_medsam2_hole_filling', type=int, default=1, help='disable SAM2 hole filling to avoid custom op warnings')
+parser.add_argument('--disable_sam2_hole_filling', '--disable_medsam2_hole_filling', dest='disable_medsam2_hole_filling', type=int, default=1, help='disable SAM2 hole filling to avoid custom op warnings')
 parser.add_argument('--eval_only', type=int, default=0, help='skip training and only run evaluation from resume_path')
 args = parser.parse_args()
 
@@ -159,9 +160,9 @@ def masked_binary_dice_loss(pred_probs, target_mask, valid_mask=None, eps=1e-6):
     return 1.0 - (numerator + eps) / (denominator + eps)
 
 
-class MedSAM2VolumeTeacher(torch.nn.Module):
+class SAM2VolumeTeacher(torch.nn.Module):
     """
-    MedSAM2 teacher for 3D CT volumes or patches.
+    Official SAM2 teacher for 3D CT volumes or patches.
 
     Input:
       images: [B, 1, W, H, D]
@@ -193,20 +194,31 @@ class MedSAM2VolumeTeacher(torch.nn.Module):
         self.lora_dropout = float(getattr(args, "medsam2_lora_dropout", 0.0))
         self.train_max_classes = int(getattr(args, "medsam2_lora_train_max_classes", 2))
 
-        medsam2_root = self._resolve_medsam2_root(args.medsam2_root)
-        if str(medsam2_root) not in sys.path:
-            sys.path.insert(0, str(medsam2_root))
+        sam2_root = self._resolve_sam2_root(args.medsam2_root)
+        if str(sam2_root) not in sys.path:
+            sys.path.insert(0, str(sam2_root))
 
         try:
-            from sam2.build_sam import build_sam2_video_predictor_npz
+             from sam2.build_sam import HF_MODEL_ID_TO_FILENAMES, build_sam2_video_predictor_npz
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError(
-                "Failed to import MedSAM2. Please install its runtime dependencies "
+                "Failed to import official SAM2. Please install its runtime dependencies "
                 "(at least hydra-core, omegaconf, iopath, tensordict) in the current environment."
             ) from exc
 
-        config_name = self._resolve_config_name(medsam2_root, args.medsam2_cfg)
-        checkpoint_path = self._resolve_file(medsam2_root, args.medsam2_checkpoint)
+        sam2_model_id = str(getattr(args, "sam2_model_id", "")).strip()
+        config_name = self._resolve_config_name(sam2_root, args.medsam2_cfg)
+        checkpoint_path = self._resolve_file(sam2_root, args.medsam2_checkpoint) if str(args.medsam2_checkpoint).strip() else None
+        if sam2_model_id:
+            if sam2_model_id not in HF_MODEL_ID_TO_FILENAMES:
+                raise ValueError(f"Unsupported official SAM2 model id: {sam2_model_id}")
+            config_name, checkpoint_name = HF_MODEL_ID_TO_FILENAMES[sam2_model_id]
+            config_name = self._resolve_config_name(sam2_root, config_name)
+            if checkpoint_path is None:
+                checkpoint_path = self._resolve_checkpoint_from_model_id(sam2_root, sam2_model_id, checkpoint_name)
+
+        if checkpoint_path is None:
+            raise FileNotFoundError("SAM2 checkpoint is not resolved. Provide --sam2_checkpoint or a valid --sam2_model_id.")
 
         self.predictor = build_sam2_video_predictor_npz(
             config_file=config_name,
@@ -255,7 +267,7 @@ class MedSAM2VolumeTeacher(torch.nn.Module):
         )
 
     @staticmethod
-    def _resolve_medsam2_root(value: str) -> Path:
+    def _resolve_sam2_root(value: str) -> Path:
         candidate = Path(value).expanduser().resolve()
         if candidate.exists():
             if (candidate / "sam2").exists():
@@ -265,7 +277,7 @@ class MedSAM2VolumeTeacher(torch.nn.Module):
         fallback = Path(SCRIPT_DIR).resolve()
         if (fallback / "sam2").exists():
             return fallback
-        raise FileNotFoundError(f"MedSAM2/SAM2 root not found: {candidate}")
+        raise FileNotFoundError(f"SAM2 root not found: {candidate}")
 
     @staticmethod
     def _resolve_file(base_dir: Path, value: str) -> Path:
@@ -286,6 +298,18 @@ class MedSAM2VolumeTeacher(torch.nn.Module):
                 return item
 
         raise FileNotFoundError(f"Cannot resolve file '{value}' under {base_dir}")
+
+    @staticmethod
+    def _resolve_checkpoint_from_model_id(base_dir: Path, model_id: str, checkpoint_name: str) -> Path:
+        local_candidates = [
+            (base_dir / "checkpoints" / checkpoint_name).resolve(),
+            (base_dir / "sam2" / "checkpoints" / checkpoint_name).resolve(),
+        ]
+        for item in local_candidates:
+            if item.exists():
+                return item
+        from huggingface_hub import hf_hub_download
+        return Path(hf_hub_download(repo_id=model_id, filename=checkpoint_name)).resolve()
 
     @staticmethod
     def _resolve_config_name(base_dir: Path, value: str) -> str:
@@ -640,7 +664,7 @@ class MedSAM2VolumeTeacher(torch.nn.Module):
     def forward(self, images, prompt_probs):
         self.set_lora_mode(train_mode=False)
         if images.ndim != 5 or images.size(1) != 1:
-            raise ValueError(f"MedSAM2VolumeTeacher expects images in [B, 1, W, H, D], but got {tuple(images.shape)}")
+            raise ValueError(f"SAM2VolumeTeacher expects images in [B, 1, W, H, D], but got {tuple(images.shape)}")
         if prompt_probs.ndim != 5 or prompt_probs.size(1) != self.num_classes:
             raise ValueError(
                 f"Prompt probabilities must be [B, {self.num_classes}, W, H, D], but got {tuple(prompt_probs.shape)}"
@@ -701,6 +725,9 @@ class MedSAM2VolumeTeacher(torch.nn.Module):
             "labels": labels,
             "coverage": coverage,
         }
+
+
+MedSAM2VolumeTeacher = SAM2VolumeTeacher
 
 
 def get_current_consistency_weight(epoch):
@@ -1185,7 +1212,7 @@ def train(labeled_list, unlabeled_list, eval_list, fold_id=1):
     medsam2_teacher = None
     medsam2_optimizer = None
     if bool(args.use_medsam2):
-        medsam2_teacher = MedSAM2VolumeTeacher(args)
+        medsam2_teacher = SAM2VolumeTeacher(args)
         medsam2_teacher.eval()
         medsam2_optimizer = build_medsam2_lora_optimizer(medsam2_teacher)
         logging.info(
@@ -1618,7 +1645,7 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Best checkpoint not found: {best_model_path}")
 
     model = create_model(n_classes=num_classes, cube_size=cube_size, patchsize=patch_size[0])
-    medsam2_teacher = MedSAM2VolumeTeacher(args) if bool(args.use_medsam2) else None
+    medsam2_teacher = SAM2VolumeTeacher(args) if bool(args.use_medsam2) else None
     load_model_for_eval(model, best_model_path, medsam2_teacher=medsam2_teacher)
     model.eval()
     if medsam2_teacher is not None:
@@ -1662,34 +1689,36 @@ Train + final dual-path test:
 CUDA_VISIBLE_DEVICES=1 python work3_BTCV_Baseline_safeSAM2_v1.py \
   --labelnum 10 \
   --max_iteration 35000 \
-  --use_medsam2 1 \
-  --medsam2_root MIS_W3 \
-  --medsam2_checkpoint /data/why/pretrain/sam2/MedSAM2_latest.pt \
-  --medsam2_num_classes 14 \
-  --medsam2_warmup 3000 \
-  --medsam2_interval 50 \
-  --medsam2_cache_size 32 \
-  --medsam2_cache_ttl 100000 \
-  --medsam2_blend_alpha 0.10 \
-  --medsam2_hard_weight 0.10 \
-  --medsam2_soft_weight 0.05 \
-  --medsam2_prompt_thresh 0.90 \
-  --medsam2_teacher_prob_thresh 0.90 \
-  --medsam2_min_voxels 1000 \
-  --medsam2_min_slice_area 100 \
-  --medsam2_max_classes 2 \
-  --medsam2_lora_enable 1 \
-  --medsam2_lora_rank 8 \
-  --medsam2_lora_lr 1e-4
+  --use_sam2 1 \
+  --sam2_root /home/why/MIS_W3 \
+  --sam2_model_id facebook/sam2-hiera-base-plus \
+  --sam2_cfg /data/why/pretrain/sam2/sam2_hiera_b+.yaml \
+  --sam2_num_classes 14 \
+  --sam2_warmup 3000 \
+  --sam2_interval 50 \
+  --sam2_cache_size 32 \
+  --sam2_cache_ttl 100000 \
+  --sam2_blend_alpha 0.10 \
+  --sam2_hard_weight 0.10 \
+  --sam2_soft_weight 0.05 \
+  --sam2_prompt_thresh 0.90 \
+  --sam2_teacher_prob_thresh 0.90 \
+  --sam2_min_voxels 1000 \
+  --sam2_min_slice_area 100 \
+  --sam2_max_classes 2 \
+  --sam2_lora_enable 1 \
+  --sam2_lora_rank 8 \
+  --sam2_lora_lr 1e-4
 
 Only run inference and output both:
 1. small model test result
 2. small model prompt -> SAM2 result
-CUDA_VISIBLE_DEVICES=1 python /Users/wanghongyi/codes/MIS_W3/work3_BTCV_Baseline_safeSAM2_v1.py \
+CUDA_VISIBLE_DEVICES=1 python work3_BTCV_Baseline_safeSAM2_v1.py \
   --eval_only 1 \
-  --use_medsam2 1 \
-  --medsam2_root MIS_W3 \
-  --medsam2_checkpoint /path/to/MedSAM2_latest.pt \
+  --use_sam2 1 \
+  --sam2_root MIS_W3 \
+  --sam2_model_id facebook/sam2-hiera-base-plus \
+  --sam2_cfg /data/why/pretrain/sam2/sam2_hiera_b+.yaml \
   --resume_path /path/to/iter_xxxxx_dice_xxxxx_best.pth
 
   
