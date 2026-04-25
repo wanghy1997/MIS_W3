@@ -1105,3 +1105,23 @@ if __name__ == '__main__':
     log_metric_summary(final_mean, final_std, class_mean, class_std)
     logging.getLogger().removeHandler(handler)
     logging.getLogger().removeHandler(sh)
+
+
+"""
+python work3_BTCV_Baseline_safeSAM2.py \
+  --exp SAM2SSL_safe_bp_maskK5_repeat_20260424 \
+  --labelnum 10 \
+  --medsam2_root /home/why/SSL4MIS_work3/MedSAM2 \
+  --medsam2_cfg sam2_hiera_b+.yaml \
+  --medsam2_checkpoint /home/why/SSL4MIS_work3/MedSAM2/checkpoints/sam2_hiera_base_plus.pt \
+  --medsam2_prompt_type mask \
+  --medsam2_num_condition_frames 5 \
+  --medsam2_rgb_mode repeat \
+  --max_iteration 30000 \
+  --labeled_bs 1 \
+  --batch_size 2 \
+  --base_lr 0.01 \
+  --resume_path /data/why/logs/GA_BTCV_GA_10_base0326/iter_19500_dice_0.620036_best.pth \
+  --resume_iter 19500 \
+  --resume_best_dice 0.620036
+"""
