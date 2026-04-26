@@ -227,7 +227,8 @@ class SAM2VideoPredictorNPZ(SAM2Base):
                     stacklevel=2,
                 )
             if not isinstance(box, torch.Tensor):
-                box = torch.tensor(box, dtype=torch.float32, device=points.device)
+                box = torch.tensor(box, dtype=torch.float32)
+            box = box.to(device=points.device, dtype=torch.float32)
             box_coords = box.reshape(1, 2, 2)
             box_labels = torch.tensor([2, 3], dtype=torch.int32, device=labels.device)
             box_labels = box_labels.reshape(1, 2)
@@ -1175,4 +1176,3 @@ class SAM2VideoPredictorNPZ(SAM2Base):
             non_cond_frame_outputs.pop(t, None)
             for obj_output_dict in inference_state["output_dict_per_obj"].values():
                 obj_output_dict["non_cond_frame_outputs"].pop(t, None)
-

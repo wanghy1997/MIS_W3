@@ -323,9 +323,9 @@ class RoPEAttention(Attention):
 
         # Apply rotary position encoding
         w = h = math.sqrt(q.shape[-2])
-        self.freqs_cis = self.freqs_cis.to(q.device)
-        if self.freqs_cis.shape[0] != q.shape[-2]:
-            self.freqs_cis = self.compute_cis(end_x=w, end_y=h).to(q.device)
+        freqs_cis = self.freqs_cis.to(q.device)
+        if freqs_cis.shape[0] != q.shape[-2]:
+            freqs_cis = self.compute_cis(end_x=w, end_y=h).to(q.device)
         if q.shape[-2] != k.shape[-2]:
             assert self.rope_k_repeat
 
@@ -333,7 +333,7 @@ class RoPEAttention(Attention):
         q, k[:, :, :num_k_rope] = apply_rotary_enc(
             q,
             k[:, :, :num_k_rope],
-            freqs_cis=self.freqs_cis,
+            freqs_cis=freqs_cis,
             repeat_freqs_k=self.rope_k_repeat,
         )
 

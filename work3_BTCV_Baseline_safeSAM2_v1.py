@@ -94,7 +94,8 @@ parser.add_argument('--sam2_lora_lr', '--medsam2_lora_lr', dest='medsam2_lora_lr
 parser.add_argument('--sam2_lora_weight_decay', '--medsam2_lora_weight_decay', dest='medsam2_lora_weight_decay', type=float, default=1e-4, help='weight decay of the SAM2 LoRA optimizer')
 parser.add_argument('--sam2_lora_warmup', '--medsam2_lora_warmup', dest='medsam2_lora_warmup', type=int, default=0, help='start SAM2 LoRA finetuning after this many iterations')
 parser.add_argument('--sam2_lora_interval', '--medsam2_lora_interval', dest='medsam2_lora_interval', type=int, default=1, help='run SAM2 LoRA finetuning every N iterations')
-parser.add_argument('--sam2_lora_train_max_classes', '--medsam2_lora_train_max_classes', dest='medsam2_lora_train_max_classes', type=int, default=2, help='maximum GT classes per labeled volume used to finetune SAM2 LoRA')
+parser.add_argument('--sam2_lora_train_max_classes', '--medsam2_lora_train_max_classes', dest='medsam2_lora_train_max_classes', type=int, default=1, help='maximum GT classes per labeled volume used to finetune SAM2 LoRA')
+parser.add_argument('--sam2_lora_scope', '--medsam2_lora_scope', dest='medsam2_lora_scope', type=str, default='memory_encoder', choices=['memory_encoder', 'memory_attention', 'both'], help='which SAM2 memory modules receive LoRA adapters')
 parser.add_argument('--sam2_lora_loss_weight', '--medsam2_lora_loss_weight', dest='medsam2_lora_loss_weight', type=float, default=1.0, help='loss weight for SAM2 LoRA finetuning')
 parser.add_argument('--resume_path', type=str, default='', help='checkpoint path for resuming training')
 parser.add_argument('--resume_iter', type=int, default=-1, help='override iteration number when resuming')
@@ -113,8 +114,12 @@ class LoRALinear(torch.nn.Module):
         self.rank = int(rank)
         self.scaling = float(alpha) / float(rank)
         self.dropout = torch.nn.Dropout(dropout) if dropout > 0 else torch.nn.Identity()
-        self.lora_down = torch.nn.Linear(base_linear.in_features, self.rank, bias=False)
-        self.lora_up = torch.nn.Linear(self.rank, base_linear.out_features, bias=False)
+        weight_kwargs = {
+            "device": base_linear.weight.device,
+            "dtype": base_linear.weight.dtype,
+        }
+        self.lora_down = torch.nn.Linear(base_linear.in_features, self.rank, bias=False, **weight_kwargs)
+        self.lora_up = torch.nn.Linear(self.rank, base_linear.out_features, bias=False, **weight_kwargs)
         torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=np.sqrt(5))
         torch.nn.init.zeros_(self.lora_up.weight)
         for parameter in self.base_linear.parameters():
@@ -192,7 +197,8 @@ class SAM2VolumeTeacher(torch.nn.Module):
         self.lora_rank = max(1, int(getattr(args, "medsam2_lora_rank", 8)))
         self.lora_alpha = float(getattr(args, "medsam2_lora_alpha", 16.0))
         self.lora_dropout = float(getattr(args, "medsam2_lora_dropout", 0.0))
-        self.train_max_classes = int(getattr(args, "medsam2_lora_train_max_classes", 2))
+        self.train_max_classes = int(getattr(args, "medsam2_lora_train_max_classes", 1))
+        self.lora_scope = str(getattr(args, "medsam2_lora_scope", "memory_encoder")).lower()
 
         sam2_root = self._resolve_sam2_root(args.medsam2_root)
         if str(sam2_root) not in sys.path:
@@ -234,24 +240,27 @@ class SAM2VolumeTeacher(torch.nn.Module):
 
         self.lora_target_modules = []
         if self.lora_enabled:
-            self.lora_target_modules.extend(
-                inject_lora_into_linears(
-                    self.predictor.memory_attention,
-                    rank=self.lora_rank,
-                    alpha=self.lora_alpha,
-                    dropout=self.lora_dropout,
-                    prefix="memory_attention",
+            if self.lora_scope in ("memory_attention", "both"):
+                self.lora_target_modules.extend(
+                    inject_lora_into_linears(
+                        self.predictor.memory_attention,
+                        rank=self.lora_rank,
+                        alpha=self.lora_alpha,
+                        dropout=self.lora_dropout,
+                        prefix="memory_attention",
+                    )
                 )
-            )
-            self.lora_target_modules.extend(
-                inject_lora_into_linears(
-                    self.predictor.memory_encoder,
-                    rank=self.lora_rank,
-                    alpha=self.lora_alpha,
-                    dropout=self.lora_dropout,
-                    prefix="memory_encoder",
+            if self.lora_scope in ("memory_encoder", "both"):
+                self.lora_target_modules.extend(
+                    inject_lora_into_linears(
+                        self.predictor.memory_encoder,
+                        rank=self.lora_rank,
+                        alpha=self.lora_alpha,
+                        dropout=self.lora_dropout,
+                        prefix="memory_encoder",
+                    )
                 )
-            )
+        self.predictor.to(self.device)
         self.predictor.eval()
 
         self.input_size = int(getattr(self.predictor, "image_size", 512))
@@ -483,13 +492,16 @@ class SAM2VolumeTeacher(torch.nn.Module):
         return valid_prompt
 
     def _pack_tracking_output(self, output):
+        maskmem_pos_enc = output["maskmem_pos_enc"]
+        if maskmem_pos_enc is not None:
+            maskmem_pos_enc = [item.detach().clone() for item in maskmem_pos_enc]
         packed = {
-            "maskmem_features": output["maskmem_features"],
-            "maskmem_pos_enc": output["maskmem_pos_enc"],
-            "obj_ptr": output["obj_ptr"],
+            "maskmem_features": output["maskmem_features"].detach().clone(),
+            "maskmem_pos_enc": maskmem_pos_enc,
+            "obj_ptr": output["obj_ptr"].detach().clone(),
         }
         if "object_score_logits" in output:
-            packed["object_score_logits"] = output["object_score_logits"]
+            packed["object_score_logits"] = output["object_score_logits"].detach().clone()
         return packed
 
     def _build_train_state(self, frame_sequence):
@@ -501,27 +513,58 @@ class SAM2VolumeTeacher(torch.nn.Module):
             "constants": {},
         }
 
+    def _prepare_train_mask_inputs(self, mask_inputs):
+        if mask_inputs is None:
+            return None
+        if mask_inputs.ndim != 4 or mask_inputs.shape[1] != 1:
+            raise ValueError(
+                f"Expected train-time SAM2 mask inputs in [B, 1, H, W], but got {tuple(mask_inputs.shape)}"
+            )
+
+        target_size = (self.predictor.image_size, self.predictor.image_size)
+        mask_inputs = mask_inputs.float()
+        if mask_inputs.shape[-2:] != target_size:
+            mask_inputs = F.interpolate(
+                mask_inputs,
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            )
+        return (mask_inputs >= 0.5).float()
+
     def _run_train_frame(self, state, output_dict, frame_idx, reverse, mask_inputs=None, is_init_cond_frame=False):
-        (
-            _,
-            _,
-            current_vision_feats,
-            current_vision_pos_embeds,
-            feat_sizes,
-        ) = self.predictor._get_image_feature(state, frame_idx=int(frame_idx), batch_size=1)
-        return self.predictor.track_step(
-            frame_idx=int(frame_idx),
-            is_init_cond_frame=bool(is_init_cond_frame),
-            current_vision_feats=current_vision_feats,
-            current_vision_pos_embeds=current_vision_pos_embeds,
-            feat_sizes=feat_sizes,
-            point_inputs=None,
-            mask_inputs=mask_inputs,
-            output_dict=output_dict,
-            num_frames=state["num_frames"],
-            track_in_reverse=bool(reverse),
-            run_mem_encoder=True,
+        autocast_ctx = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if self.device.type == "cuda"
+            else nullcontext()
         )
+        with torch.no_grad():
+            with autocast_ctx:
+                (
+                    _,
+                    _,
+                    current_vision_feats,
+                    current_vision_pos_embeds,
+                    feat_sizes,
+                ) = self.predictor._get_image_feature(state, frame_idx=int(frame_idx), batch_size=1)
+        current_vision_feats = [item.detach().clone() for item in current_vision_feats]
+        current_vision_pos_embeds = [item.detach().clone() for item in current_vision_pos_embeds]
+        mask_inputs = self._prepare_train_mask_inputs(mask_inputs)
+        with autocast_ctx:
+            return self.predictor.track_step(
+                frame_idx=int(frame_idx),
+                is_init_cond_frame=bool(is_init_cond_frame),
+                current_vision_feats=current_vision_feats,
+                current_vision_pos_embeds=current_vision_pos_embeds,
+                feat_sizes=feat_sizes,
+                point_inputs=None,
+                mask_inputs=mask_inputs,
+                output_dict=output_dict,
+                num_frames=state["num_frames"],
+                track_in_reverse=bool(reverse),
+                run_mem_encoder=True,
+            )
 
     def _resize_pred_to_volume(self, pred_masks_high_res, width, height):
         resized = F.interpolate(
@@ -604,25 +647,54 @@ class SAM2VolumeTeacher(torch.nn.Module):
             frame_sequence = self._preprocess_sequence(self._volume_to_rgb_sequence(volume)).to(self.device)
             active_classes = self._select_train_classes(label_volume)
             for class_id in active_classes:
-                class_mask = (label_volume == class_id)
-                selected_slices, prompt_mask = self._pick_key_slices(class_mask.float(), class_mask)
-                if not selected_slices:
+                try:
+                    class_mask = (label_volume == class_id)
+                    selected_slices, prompt_mask = self._pick_key_slices(class_mask.float(), class_mask)
+                    if not selected_slices:
+                        continue
+                    scores_forward = self._propagate_single_direction_train(
+                        frame_sequence, selected_slices, prompt_mask.to(self.device), reverse=False
+                    )
+                    scores_reverse = None
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    try:
+                        scores_reverse = self._propagate_single_direction_train(
+                            frame_sequence, selected_slices, prompt_mask.to(self.device), reverse=True
+                        )
+                    except torch.OutOfMemoryError as exc:
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        logging.warning(
+                            "SAM2 LoRA reverse tracking ran out of memory for batch %d class %d; "
+                            "falling back to forward-only LoRA on this sample. Details: %s",
+                            batch_idx,
+                            int(class_id),
+                            exc,
+                        )
+                    if scores_forward is None and scores_reverse is None:
+                        continue
+                    class_scores = scores_forward if scores_forward is not None else scores_reverse
+                    if scores_forward is not None and scores_reverse is not None:
+                        class_scores = torch.maximum(scores_forward, scores_reverse)
+                    gt_mask = class_mask.float().to(self.device)
+                    class_loss = self._compute_lora_class_loss(class_scores, gt_mask, selected_slices)
+                    total_loss = class_loss if total_loss is None else total_loss + class_loss
+                    total_classes += 1
+                except torch.OutOfMemoryError as exc:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    logging.warning(
+                        "SAM2 LoRA tracking ran out of memory for batch %d class %d; "
+                        "skipping this class and continuing training. Details: %s",
+                        batch_idx,
+                        int(class_id),
+                        exc,
+                    )
                     continue
-                scores_forward = self._propagate_single_direction_train(
-                    frame_sequence, selected_slices, prompt_mask.to(self.device), reverse=False
-                )
-                scores_reverse = self._propagate_single_direction_train(
-                    frame_sequence, selected_slices, prompt_mask.to(self.device), reverse=True
-                )
-                if scores_forward is None and scores_reverse is None:
-                    continue
-                class_scores = scores_forward if scores_forward is not None else scores_reverse
-                if scores_forward is not None and scores_reverse is not None:
-                    class_scores = torch.maximum(scores_forward, scores_reverse)
-                gt_mask = class_mask.float().to(self.device)
-                class_loss = self._compute_lora_class_loss(class_scores, gt_mask, selected_slices)
-                total_loss = class_loss if total_loss is None else total_loss + class_loss
-                total_classes += 1
+                finally:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
         self.set_lora_mode(train_mode=False)
         if total_loss is None or total_classes == 0:
@@ -1216,10 +1288,12 @@ def train(labeled_list, unlabeled_list, eval_list, fold_id=1):
         medsam2_teacher.eval()
         medsam2_optimizer = build_medsam2_lora_optimizer(medsam2_teacher)
         logging.info(
-            "SAM2 LoRA enabled=%s, trainable_params=%d, target_modules=%d",
+            "SAM2 LoRA enabled=%s, trainable_params=%d, target_modules=%d, scope=%s, max_train_classes=%d",
             bool(medsam2_teacher.has_trainable_lora()),
             int(sum(parameter.numel() for parameter in medsam2_teacher.get_trainable_parameters())),
             len(getattr(medsam2_teacher, "lora_target_modules", [])),
+            getattr(medsam2_teacher, "lora_scope", "unknown"),
+            int(getattr(medsam2_teacher, "train_max_classes", 0)),
         )
 
     db_train = BTCV_fast(labeled_list, unlabeled_list,
